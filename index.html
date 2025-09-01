@@ -101,4 +101,377 @@
                 </div>
                 <div class="modal-buttons">
                     <button class="btn btn-primary" onclick="checkHardware()">🖥️ Donanım Kontrolü</button>
-                <
+                </div>
+            </div>
+            <div class="modal-buttons" style="margin-top:20px;">
+                <button class="btn btn-secondary" onclick="window.close()">✕ İptal</button>
+            </div>
+        </div>
+    </div>
+    
+    <div id="licenseRequestModal" class="modal-overlay" style="display:none;">
+        <div class="modal">
+            <h2>🔒 Lisans Gerekli</h2>
+            <div class="license-warning">
+                <strong>Bu özellik için lisans anahtarı gereklidir!</strong><br>
+                E-mail hesabınız ile sadece görüntüleme yapabilirsiniz.
+            </div>
+            <p>Koordinat dönüştürme ve indirme işlemleri için geçerli bir lisans anahtarı girin:</p>
+            <input type="password" id="tempLicenseKey" placeholder="Lisans anahtarınızı girin..." maxlength="20">
+            <div class="modal-buttons">
+                <button class="btn btn-primary" onclick="checkTempLicense()">✓ Doğrula</button>
+                <button class="btn btn-secondary" onclick="closeLicenseRequest()">✕ İptal</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="container" id="mainApp" style="display:none;">
+        <div class="header">
+            <h1>🗺️ Koordinat Dönüştürücü</h1>
+            <div class="author">© 2025 Adil Koray Serifagaoglu - Tüm Hakları Saklıdır</div>
+            <div class="user-info" id="userInfo">
+                Kullanıcı: Yükleniyor...
+                <button class="logout-btn" onclick="logout()">Çıkış</button>
+            </div>
+        </div>
+        <div class="main-content">
+            <div class="input-section">
+                <h3 class="section-title">📥 Girdi Koordinatları</h3>
+                <div class="format-info"><strong>Girdi Formatı:</strong><br>Nokta_No X Y Z (boşluk ile ayrılmış)</div>
+                <textarea id="inputData" placeholder="Koordinatlarınızı buraya yapıştırın..."></textarea>
+            </div>
+            <div class="output-section">
+                <h3 class="section-title">📤 Çıktı</h3>
+                <div class="controls">
+                    <button class="btn btn-secondary" id="dxfBtn" onclick="convertToDXF()">📄 DXF Formatı</button>
+                    <button class="btn btn-secondary" id="scriptBtn" onclick="convertToScript()">📝 Script Formatı</button>
+                </div>
+                <textarea id="outputData" placeholder="Dönüştürülmüş koordinatlar burada görünecek..." readonly></textarea>
+                <div style="margin-top:15px;">
+                    <button class="btn btn-success" id="downloadBtn" onclick="downloadFile()">💾 Dosya İndir</button>
+                </div>
+            </div>
+        </div>
+        <div class="footer">
+            <p><strong>Koordinat Dönüştürücü v2.0 - Güvenli Sürüm</strong></p>
+            <p>Bu yazılımın tüm hakları <strong>Adil Koray Serifagaoglu</strong>'na aittir.</p>
+            <p>Yetkisiz kullanım yasaktır. © 2025</p>
+        </div>
+    </div>
+    
+    <script>
+        let currentVerificationCode = null;
+        let verificationEmail = null;
+        let currentUser = null;
+        let sessionExpiry = null;
+        let currentFormat = 'point';
+        let processedData = [];
+        let verificationTimer = null;
+        let pendingOperation = null;
+
+        const VALID_LICENSE_HASHES = new Set([
+            'd524c673d0d7d1716a4a5de4db83ff35a620169cae373b892d6794d2713b4d14',
+            '463639a74d091d34db0ce0b6d9c471ac2a55675156f51c4c209d04974c753527',
+            '54db75728cf5cd330d98b597008686454094ec1846ab6bd71b7fd422c1b8917a',
+            'b066a54250e36e2be53a6a4f2b3c33ca210d15e2b42af7664c928781dfcae4b8'
+        ]);
+        
+        const PREMIUM_EMAIL = 'korayserif@gmail.com';
+
+        const AUTHORIZED_HARDWARE = new Set([
+            'HW001-DESKTOP-ABC123',
+            'HW002-LAPTOP-DEF456',
+            'HW003-WORKSTATION-GHI789'
+        ]);
+
+        async function sha256Hex(text) {
+            const enc = new TextEncoder().encode(text);
+            const buf = await crypto.subtle.digest('SHA-256', enc);
+            return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+        }
+
+        function hasFullAccess() {
+            return currentUser && (
+                currentUser.method === 'license' || 
+                currentUser.method === 'hardware' ||
+                (currentUser.method === 'email' && currentUser.permission === 'premium')
+            );
+        }
+
+        function switchTab(element, tabName) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            element.classList.add('active');
+            document.getElementById(tabName + 'Tab').classList.add('active');
+        }
+
+        async function checkLicense() {
+            const keyInput = document.getElementById('licenseKey');
+            const key = keyInput.value.trim();
+            if (!key) { alert('Lisans anahtarı giriniz.'); keyInput.focus(); return; }
+            try {
+                const hash = await sha256Hex(key.toUpperCase());
+                if (VALID_LICENSE_HASHES.has(hash)) {
+                    loginUser('Lisans Kullanıcısı', 'license', 'premium');
+                } else {
+                    alert('❌ Geçersiz lisans anahtarı!');
+                    keyInput.value=''; keyInput.focus();
+                }
+            } catch(e) { console.error(e); alert('Doğrulama sırasında hata oluştu.'); }
+        }
+
+        async function checkTempLicense() {
+            const keyInput = document.getElementById('tempLicenseKey');
+            const key = keyInput.value.trim();
+            if (!key) { alert('Lisans anahtarı giriniz.'); keyInput.focus(); return; }
+            try {
+                const hash = await sha256Hex(key.toUpperCase());
+                if (VALID_LICENSE_HASHES.has(hash)) {
+                    closeLicenseRequest();
+                    if (pendingOperation) { pendingOperation(); pendingOperation = null; }
+                } else {
+                    alert('❌ Geçersiz lisans anahtarı!');
+                    keyInput.value=''; keyInput.focus();
+                }
+            } catch(e) { console.error(e); alert('Doğrulama sırasında hata oluştu.'); }
+        }
+
+        function closeLicenseRequest() {
+            document.getElementById('licenseRequestModal').style.display = 'none';
+            document.getElementById('tempLicenseKey').value = '';
+            pendingOperation = null;
+        }
+
+        function requestLicenseForOperation(operation) {
+            pendingOperation = operation;
+            document.getElementById('licenseRequestModal').style.display = 'flex';
+            document.getElementById('tempLicenseKey').focus();
+        }
+
+        // ---------- BURASI EN ÖNEMLİ DEĞİŞİKLİK ----------
+        async function sendVerificationCode() {
+            const email = document.getElementById('emailInput').value.trim();
+            if (!email) {
+                alert('E-mail adresinizi girin!');
+                document.getElementById('emailInput').focus();
+                return;
+            }
+
+            const emailBtn = document.getElementById('emailBtn');
+            emailBtn.disabled = true;
+            emailBtn.innerHTML = '📧 Gönderiliyor...';
+
+            try {
+                // Bizim güvenli Netlify fonksiyonumuza istek gönderiyoruz
+                const response = await fetch('/.netlify/functions/send-email', {
+                    method: 'POST',
+                    body: JSON.stringify({ email: email }),
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                const result = await response.json();
+
+                if (!response.ok || !result.success) {
+                    // Eğer fonksiyon hata döndürürse
+                    throw new Error(result.message || 'Sunucuda bir hata oluştu.');
+                }
+
+                // Fonksiyondan gelen doğrulama kodunu değişkene ata
+                currentVerificationCode = result.code;
+                verificationEmail = email;
+
+                // Arayüzü güncelle
+                document.getElementById('emailCode').style.display = 'block';
+                document.getElementById('emailStatus').style.display = 'block';
+                document.getElementById('codeTimer').style.display = 'block';
+                
+                emailBtn.innerHTML = '✓ Kodu Doğrula';
+                emailBtn.onclick = verifyEmailCode;
+                emailBtn.disabled = false;
+
+                startTimer(300);
+                document.getElementById('emailCode').focus();
+
+            } catch (error) {
+                console.error('E-mail gönderme hatası:', error);
+                alert(`⚠️ E-mail gönderimi başarısız oldu: ${error.message}`);
+                emailBtn.innerHTML = '📧 Kod Gönder';
+                emailBtn.disabled = false;
+            }
+        }
+        // ---------- DEĞİŞİKLİK SONU ----------
+
+        function verifyEmailCode() {
+            const inputCode = document.getElementById('emailCode').value.trim();
+            if (!inputCode) { alert('Doğrulama kodunu girin!'); document.getElementById('emailCode').focus(); return; }
+            if (inputCode === currentVerificationCode) {
+                clearTimeout(verificationTimer);
+                let permission = (verificationEmail.toLowerCase() === PREMIUM_EMAIL) ? 'premium' : 'limited';
+                loginUser(verificationEmail, 'email', permission);
+                currentVerificationCode = null;
+                verificationEmail = null;
+            } else {
+                alert('❌ Geçersiz doğrulama kodu!');
+                document.getElementById('emailCode').focus();
+            }
+        }
+
+        function startTimer(seconds) {
+            clearTimeout(verificationTimer);
+            let remaining = seconds;
+            const timerElement = document.getElementById('timer');
+            function updateTimer() {
+                timerElement.textContent = `${Math.floor(remaining/60)}:${(remaining%60).toString().padStart(2,'0')}`;
+                if (remaining <= 0) {
+                    document.getElementById('codeTimer').innerHTML = '<span style="color:red;">⏰ Süre doldu!</span>';
+                    document.getElementById('emailBtn').innerHTML = '📧 Yeni Kod Gönder';
+                    document.getElementById('emailBtn').onclick = sendVerificationCode;
+                    document.getElementById('emailCode').style.display = 'none';
+                    currentVerificationCode = null;
+                } else {
+                    remaining--;
+                    verificationTimer = setTimeout(updateTimer, 1000);
+                }
+            }
+            updateTimer();
+        }
+
+        function generateHardwareFingerprint() {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            ctx.fillText('fingerprint', 2, 2);
+            const fingerprint = [navigator.userAgent, navigator.language, screen.width + 'x' + screen.height, new Date().getTimezoneOffset(), canvas.toDataURL()].join('|');
+            let hash = 0;
+            for (let i = 0; i < fingerprint.length; i++) {
+                hash = ((hash << 5) - hash) + fingerprint.charCodeAt(i);
+                hash |= 0;
+            }
+            return 'HW' + Math.abs(hash).toString(16).toUpperCase();
+        }
+
+        function checkHardware() {
+            const hwId = generateHardwareFingerprint();
+            document.getElementById('hardwareInfo').innerHTML = `Cihaz Kimliği: ${hwId}`;
+            if (AUTHORIZED_HARDWARE.has(hwId)) {
+                loginUser(`Donanım-${hwId.slice(-6)}`, 'hardware', 'premium');
+            } else {
+                alert('❌ Bu cihaz yetkili değil!');
+            }
+        }
+
+        function loginUser(username, method, permission) {
+            currentUser = { name: username, method: method, permission: permission };
+            sessionExpiry = Date.now() + (2 * 60 * 60 * 1000); // 2 saat
+            document.getElementById('authModal').style.display = 'none';
+            document.getElementById('mainApp').style.display = 'block';
+            let userDisplay = username;
+            if (permission === 'premium') userDisplay += '<span class="premium-badge">TAM ERİŞİM</span>';
+            document.getElementById('userInfo').innerHTML = `👤 ${userDisplay} <button class="logout-btn" onclick="logout()">Çıkış</button>`;
+            updateButtonStates();
+            setInterval(checkSession, 60000);
+        }
+
+        function updateButtonStates() {
+            const fullAccess = hasFullAccess();
+            document.querySelectorAll('#dxfBtn, #scriptBtn, #downloadBtn').forEach(btn => {
+                if (!fullAccess) {
+                    btn.classList.add('btn-locked');
+                    btn.innerHTML = `🔒 ${btn.innerText.split('(')[0]} (Lisans Gerekli)`;
+                } else {
+                    btn.classList.remove('btn-locked');
+                    btn.innerHTML = btn.innerHTML.replace('🔒 ', '').split('(')[0].trim();
+                }
+            });
+        }
+
+        function checkSession() {
+            if (!currentUser || Date.now() > sessionExpiry) {
+                alert('⏰ Oturumunuz sona erdi. Tekrar giriş yapın.');
+                logout();
+            }
+        }
+
+        function logout() {
+            currentUser = null;
+            sessionExpiry = null;
+            location.reload();
+        }
+        
+        document.getElementById('inputData').addEventListener('input', function() {
+            if (!currentUser) return;
+            processedData = parseInput(this.value.trim());
+            autoConvertToPoint();
+        });
+
+        function parseInput(input) {
+            return input.split('\n').filter(l => l.trim() !== '').map(line => {
+                const parts = line.trim().split(/\s+/);
+                return { id: parts[0], x: parseFloat(parts[1]), y: parseFloat(parts[2]), z: parseFloat(parts[3]) };
+            }).filter(p => !isNaN(p.x));
+        }
+
+        function autoConvertToPoint() {
+            if (!hasFullAccess()) { document.getElementById('outputData').value = ''; return; }
+            if (processedData.length === 0) { document.getElementById('outputData').value = ''; return; }
+            currentFormat = 'point';
+            document.getElementById('outputData').value = processedData.map(p => `_point ${p.x},${p.y},${p.z}`).join('\n');
+        }
+
+        function convertToDXF() {
+            if (!hasFullAccess()) { requestLicenseForOperation(convertToDXF); return; }
+            if (processedData.length === 0) { alert('Lütfen önce koordinat verisi girin!'); return; }
+            currentFormat = 'dxf';
+            let dxf = `0\nSECTION\n2\nENTITIES\n`;
+            processedData.forEach(p => { dxf += `0\nPOINT\n8\n0\n10\n${p.x}\n20\n${p.y}\n30\n${p.z}\n`; });
+            dxf += `0\nENDSEC\n0\nEOF`;
+            document.getElementById('outputData').value = dxf;
+        }
+
+        function convertToScript() {
+            if (!hasFullAccess()) { requestLicenseForOperation(convertToScript); return; }
+            if (processedData.length === 0) { alert('Lütfen önce koordinat verisi girin!'); return; }
+            currentFormat = 'script';
+            document.getElementById('outputData').value = processedData.map(p => `point ${p.x},${p.y},${p.z}`).join('\n');
+        }
+
+        function downloadFile() {
+            if (!hasFullAccess()) { requestLicenseForOperation(downloadFile); return; }
+            const output = document.getElementById('outputData').value;
+            if (!output.trim()) { alert('İndirilecek veri yok!'); return; }
+            const timestamp = new Date().toISOString().slice(0, 19).replace(/[:-]/g, '');
+            let filename, mimeType;
+            switch(currentFormat) {
+                case 'dxf': filename = `koordinatlar_${timestamp}.dxf`; mimeType = 'application/dxf'; break;
+                case 'script': filename = `koordinatlar_${timestamp}.scr`; mimeType = 'text/plain'; break;
+                default: filename = `koordinatlar_${timestamp}.txt`; mimeType = 'text/plain';
+            }
+            const blob = new Blob([output], {type: mimeType});
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(a.href);
+        }
+
+        document.addEventListener('contextmenu', e => e.preventDefault());
+        document.addEventListener('keydown', e => {
+            if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I') || (e.ctrlKey && e.key === 'u')) {
+                e.preventDefault();
+            }
+        });
+
+        document.querySelectorAll('input[type="password"]').forEach(el => {
+            el.addEventListener('keypress', function(e) { if (e.key === 'Enter') this.nextElementSibling.querySelector('button').click(); });
+        });
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.addEventListener('click', function() { switchTab(this, this.getAttribute('data-tab')); });
+            });
+            setTimeout(() => { document.getElementById('hardwareInfo').innerHTML = `Cihaz Kimliği: ${generateHardwareFingerprint()}`; }, 500);
+        });
+    </script>
+</body>
+</html>
